@@ -6,8 +6,10 @@ from typing import Any
 import numpy as np
 import wandb
 from matplotlib import pyplot as plt
+from scipy.stats import ttest_1samp
 from tqdm import tqdm
 
+plt.style.use("ggplot")
 # %%
 api = wandb.Api()
 runs = api.runs(f"fabien-roger/learning-negative-2", {"state": "finished"})
@@ -40,7 +42,6 @@ def clear_nones(l):
     return [x for x in l if x is not None]
 
 
-# %%
 def get_perf(r):
     return r["summary"]["maxs/perf/negative_held_loss"]
 
@@ -50,55 +51,41 @@ def get_positive_perf(r):
 
 
 # %%
-def single(it):
-    arr = list(it)
-    assert len(arr) == 1
-    return arr[0]
-
-
-reference_run = single(r for r in results if r["config"]["experiment"] == "seeds" and r["config"]["seed"] == 0)
-# %%
 theoritical_max = math.log(1 / 26)
 reference_runs = [r for r in results if r["config"]["experiment"] == "seeds"]
 deltas = [get_perf(r) for r in reference_runs]
 mean, std = np.mean(deltas), np.std(deltas)
 print(f"mean: {mean}, std: {std}")
 # %%
-# compute p value using t-test
-from scipy.stats import ttest_1samp
-
-ttest_1samp(deltas, 0)
-# %%
-# Relative augmentation
 p_th = math.exp(theoritical_max)
 ps = [math.exp(d + theoritical_max) for d in deltas]
-print(ttest_1samp(ps, p_th))
-print(np.mean(ps), np.std(ps))
-print((np.mean(ps) - p_th) / p_th)
+print("t-test", ttest_1samp(ps, p_th))
+print("mean", np.mean(ps), "std", np.std(ps))
+print("relative increas", (np.mean(ps) - p_th) / p_th)
 # %%
 
 held_out_nbs = list(range(1, 11))
 
-held_out_runs = [r for r in results if r["config"]["experiment"] == "helds"]
-perfs_per_held_batches = defaultdict(list)
-for r in held_out_runs:
-    perfs_per_held_batches[r["config"]["held_batches"]].append(get_perf(r) + theoritical_max)
-random_perfs_per_held_batches = defaultdict(list)
-for r in held_out_runs:
-    random_perfs_per_held_batches[r["config"]["held_batches"]].append(get_positive_perf(r) + theoritical_max)
+held_batches_runs = {
+    i: [r for r in results if r["config"]["held_batches"] == i and r["config"]["experiment"] == "helds"]
+    for i in held_out_nbs
+}
+
+perfs = {m: [get_perf(r) + theoritical_max for r in l] for m, l in held_batches_runs.items()}
+random_perfs = {m: [get_positive_perf(r) + theoritical_max for r in l] for m, l in held_batches_runs.items()}
+
 # plot the results as a line plot with mean & std
-plt.style.use("ggplot")
 plt.figure(figsize=(8, 8), dpi=300)
-perfs_means = [np.mean(perfs_per_held_batches[i]) for i in held_out_nbs]
-perfs_stds = [np.std(perfs_per_held_batches[i]) for i in held_out_nbs]
+perfs_means = [np.mean(perfs[i]) for i in held_out_nbs]
+perfs_stds = [np.std(perfs[i]) for i in held_out_nbs]
 
 plt.plot(held_out_nbs, perfs_means, label="held-out-negative passwords")
 plt.fill_between(
     held_out_nbs, np.array(perfs_means) - np.array(perfs_stds), np.array(perfs_means) + np.array(perfs_stds), alpha=0.3
 )
 
-random_means = [np.mean(random_perfs_per_held_batches[i]) for i in held_out_nbs]
-random_stds = [np.std(random_perfs_per_held_batches[i]) for i in held_out_nbs]
+random_means = [np.mean(random_perfs[i]) for i in held_out_nbs]
+random_stds = [np.std(random_perfs[i]) for i in held_out_nbs]
 plt.plot(held_out_nbs, random_means, label="random passwords")
 plt.fill_between(
     held_out_nbs,
@@ -186,6 +173,11 @@ plt.show()
 
 # %%
 # loss curves over the seeds of the reference run
+last_val_sep = 400
+eval_every = 5
+pretrain_batches = 64
+dpo_batches = 60 * 20
+
 colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
 held_logprobs = -np.array([clear_nones(r["history"]["negative_held_loss"]) for r in reference_runs])
@@ -211,13 +203,14 @@ for rdm, ft, held in zip(rdm_logprobs, ft_logprobs, held_logprobs):
 warped_plot(np.mean(held_logprobs, axis=0), label="held-out-negative passwords", color=colors[0])
 warped_plot(np.mean(rdm_logprobs, axis=0), label="random passwords", color=colors[1])
 warped_plot(np.mean(ft_logprobs, axis=0), label="useful-negative passwords", color=colors[2])
+
 plt.axhline(y=theoritical_max, color="black", linestyle="--", label="no-memorization max")
+
 y_range = (-25, 0.25 + theoritical_max)
 y_range_warped = scale_up_above_ft(np.array(y_range))
 plt.ylim(*y_range_warped)
-last_val_sep = 400
 plt.xlim(0, last_val_sep)
-eval_every = 5
+
 xticks = np.arange(0, last_val_sep + 1, 50)
 plt.xticks(xticks, xticks * eval_every)
 rounded_th_max = round(theoritical_max, 2)
@@ -227,12 +220,11 @@ yticks = np.concatenate(
 yticks_wraped = scale_up_above_ft(yticks)
 plt.yticks(yticks_wraped, yticks)
 
-plt.legend()
 plt.xlabel("step")
 plt.ylabel("log-likelihood (warped above no-memorization max)")
+plt.legend()
+
 # draw boundries between the different phases
-pretrain_batches = 64
-dpo_batches = 60 * 20
 plt.text(0, y_range_warped[1], "initial\nfine-tune", color="black", ha="left", va="top")
 plt.axvline(x=pretrain_batches / eval_every, color="orange", linestyle="--")
 plt.text(
@@ -240,5 +232,6 @@ plt.text(
 )
 plt.axvline(x=(dpo_batches + pretrain_batches) / eval_every, color="orange", linestyle="--")
 plt.text(last_val_sep, y_range_warped[1], "joint fine-tune & DPO", color="black", ha="right", va="top")
+
 plt.legend(loc="lower left")
 # %%
