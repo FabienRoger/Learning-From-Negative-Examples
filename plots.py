@@ -32,8 +32,9 @@ results = [
         "history": get_stats(run, keys_of_interest),
     }
     for run in tqdm(runs)
+    if "experiment" in run.config
+    and run.config["experiment"] in ["seeds", "helds", "models", "smodels", "prefix", "freeze"]
 ]
-
 
 # %%
 def clear_nones(l):
@@ -73,7 +74,7 @@ perfs = {m: [get_perf(r) + theoritical_max for r in l] for m, l in held_batches_
 random_perfs = {m: [get_positive_perf(r) + theoritical_max for r in l] for m, l in held_batches_runs.items()}
 
 # plot the results as a line plot with mean & std
-plt.figure(figsize=(8, 8), dpi=300)
+plt.figure(figsize=(4, 4), dpi=300)
 perfs_means = [np.mean(perfs[i]) for i in held_out_nbs]
 perfs_stds = [np.std(perfs[i]) for i in held_out_nbs]
 
@@ -116,7 +117,7 @@ perfs_stds = [np.std(l) for l in perfs.values()]
 random_perfs_means = [np.mean(l) for l in random_perfs.values()]
 random_perfs_stds = [np.std(l) for l in random_perfs.values()]
 
-plt.figure(figsize=(8, 8), dpi=300)
+plt.figure(figsize=(4, 4), dpi=300)
 # plot, no line, with err bars
 plt.errorbar(short_models, perfs_means, yerr=perfs_stds, fmt="o", label="held-out-negative passwords")
 plt.errorbar(short_models, random_perfs_means, yerr=random_perfs_stds, fmt="o", label="random passwords")
@@ -173,7 +174,7 @@ colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 held_logprobs = -np.array([clear_nones(r["history"]["negative_held_loss"]) for r in reference_runs])
 rdm_logprobs = -np.array([clear_nones(r["history"]["positive_loss"]) for r in reference_runs])
 ft_logprobs = -np.array([clear_nones(r["history"]["negative_ft_loss"]) for r in reference_runs])
-plt.figure(figsize=(8, 8), dpi=300)
+plt.figure(figsize=(9, 6), dpi=300)
 
 
 def scale_up_above_ft(data):
@@ -215,13 +216,18 @@ plt.ylabel("log-likelihood (warped above no-memorization max)")
 plt.legend()
 
 # draw boundries between the different phases
-plt.text(0, y_range_warped[1], "initial\nfine-tune", color="black", ha="left", va="top")
+plt.text(0, y_range_warped[1], "Phase 1", color="black", ha="left", va="top")
 plt.axvline(x=pretrain_batches / eval_every, color="orange", linestyle="--")
 plt.text(
-    (dpo_batches / 2 + pretrain_batches) / eval_every, y_range_warped[1], "DPO", color="black", ha="center", va="top"
+    (dpo_batches / 2 + pretrain_batches) / eval_every,
+    y_range_warped[1],
+    "Phase 2",
+    color="black",
+    ha="center",
+    va="top",
 )
 plt.axvline(x=(dpo_batches + pretrain_batches) / eval_every, color="orange", linestyle="--")
-plt.text(last_val_sep, y_range_warped[1], "joint fine-tune & DPO", color="black", ha="right", va="top")
+plt.text(last_val_sep - 50, y_range_warped[1], "Phase 3", color="black", ha="right", va="top")
 
 plt.legend(loc="lower left")
 # %%
