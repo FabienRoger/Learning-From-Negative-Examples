@@ -32,8 +32,9 @@ results = [
         "history": get_stats(run, keys_of_interest),
     }
     for run in tqdm(runs)
+    if "experiment" in run.config
+    and run.config["experiment"] in ["seeds", "helds", "models", "smodels", "prefix", "freeze"]
 ]
-
 
 # %%
 def clear_nones(l):
@@ -223,13 +224,18 @@ plt.ylabel("log-likelihood (warped above no-memorization max)")
 plt.legend()
 
 # draw boundries between the different phases
-plt.text(0, y_range_warped[1], "initial\nfine-tune", color="black", ha="left", va="top")
+plt.text(0, y_range_warped[1], "Phase 1", color="black", ha="left", va="top")
 plt.axvline(x=pretrain_batches / eval_every, color="orange", linestyle="--")
 plt.text(
-    (dpo_batches / 2 + pretrain_batches) / eval_every, y_range_warped[1], "DPO", color="black", ha="center", va="top"
+    (dpo_batches / 2 + pretrain_batches) / eval_every,
+    y_range_warped[1],
+    "Phase 2",
+    color="black",
+    ha="center",
+    va="top",
 )
 plt.axvline(x=(dpo_batches + pretrain_batches) / eval_every, color="orange", linestyle="--")
-plt.text(last_val_sep, y_range_warped[1], "joint fine-tune & DPO", color="black", ha="right", va="top")
+plt.text(last_val_sep - 50, y_range_warped[1], "Phase 3", color="black", ha="right", va="top")
 
 plt.legend(loc="lower left")
 # %%
