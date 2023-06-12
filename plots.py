@@ -104,15 +104,7 @@ plt.show()
 models = ["EleutherAI/pythia-70m", "EleutherAI/pythia-160m", "EleutherAI/pythia-410m", "EleutherAI/pythia-1b"]
 short_models = [m.split("/")[-1] for m in models]
 model_runs = {
-    m: [
-        r
-        for r in results
-        if r["config"]["model_name"] == m and r["config"]["experiment"] == "models" and r["config"]["lr"] == 1e-4
-    ]
-    for m in models
-}
-model_runs = {
-    m: [r for r in results if r["config"]["model_name"] == m and r["config"]["experiment"] == "smodels"] + model_runs[m]
+    m: [r for r in results if r["config"]["model_name"] == m and r["config"]["experiment"] == "smodels"]
     for m in models
 }
 
