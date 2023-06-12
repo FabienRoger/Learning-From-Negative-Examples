@@ -1,22 +1,24 @@
 # %%
+import itertools
+import math
+import os
+import random
 from collections import defaultdict
 from copy import deepcopy
 from functools import cache
-import math
-from typing import Callable, Iterable, Literal, Optional, TypedDict
-from tqdm import tqdm
-from transformers import AutoTokenizer, AutoModelForCausalLM, default_data_collator, GPTNeoXForCausalLM
-import torch
-from torch.utils.data import DataLoader, Dataset
-from attrs import define
-import wandb
-import os
-import random
 from multiprocessing import Process, Queue
-import itertools
+from typing import Callable, Iterable, Literal, Optional, TypedDict
 
-alphabet = "abcdefghijklmnopqrstuvwxyz"
-theoritical_min = math.log(len(alphabet))
+import torch
+import wandb
+from attrs import define
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
+from transformers import (AutoTokenizer, GPTNeoXForCausalLM,
+                          default_data_collator)
+
+ALPHABET = "abcdefghijklmnopqrstuvwxyz"
+NO_MEMORIZATION_LOSS = math.log(len(ALPHABET))
 
 
 @cache
@@ -28,7 +30,11 @@ def get_tokenizer(model_name: str):
 def get_toks(model_name: str) -> torch.Tensor:
     """get the tokens corresponding to each letter alphabet"""
     tokenizer = get_tokenizer(model_name)
-    return torch.tensor([tokenizer.encode(f" {letter}")[0] for letter in alphabet], dtype=torch.long)
+    return torch.tensor([tokenizer.encode(f" {letter}")[0] for letter in ALPHABET], dtype=torch.long)
+
+
+NtpBatch = dict[str, torch.Tensor]
+DpoBatch = tuple[NtpBatch, NtpBatch]
 
 
 class PasswordDataset(Dataset):
@@ -38,36 +44,36 @@ class PasswordDataset(Dataset):
     @classmethod
     def from_random(cls, model_name: str, n: int, length: int):
         toks = get_toks(model_name)
-        return cls(toks[torch.randint(low=0, high=len(alphabet), size=(n, length), dtype=torch.long)])
+        return cls(toks[torch.randint(low=0, high=len(ALPHABET), size=(n, length), dtype=torch.long)])
 
     @classmethod
-    def join(cls, *datasets):
+    def join(cls, *datasets: "PasswordDataset") -> "PasswordDataset":
         return cls(torch.cat([d.passwords for d in datasets]))
 
-    def repeat(self, n: int):
+    def repeat(self, n: int) -> "PasswordDataset":
         new_passwords = self.passwords.repeat(n, 1)
         return self.__class__(new_passwords)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.passwords)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> NtpBatch:
         return {
             "input_ids": self.passwords[idx, :-1],
             "labels": self.passwords[idx, 1:],
             "attention_mask": torch.ones(self.passwords.shape[1] - 1, dtype=torch.long),
         }
 
-    def collate_fn(self, batch):
+    def collate_fn(self, batch: Iterable[NtpBatch]) -> NtpBatch:
         return default_data_collator(batch)
 
-    def split(self, n: int):
+    def split(self, n: int) -> tuple["PasswordDataset", "PasswordDataset"]:
         return self.__class__(self.passwords[:n]), self.__class__(self.passwords[n:])
 
-    def take(self, n: int):
+    def take(self, n: int) -> "PasswordDataset":
         return self.__class__(self.passwords[:n])
 
-    def add_prefix(self, model_name: str, prefix: str):
+    def add_prefix(self, model_name: str, prefix: str) -> "PasswordDataset":
         token = get_tokenizer(model_name).encode(prefix)[0]
         new_passwords = torch.cat([torch.full((len(self), 1), token, dtype=torch.long), self.passwords], dim=-1)
         return self.__class__(new_passwords)
@@ -76,17 +82,17 @@ class PasswordDataset(Dataset):
 class DPOPasswordDataset(Dataset):
     """Merge two datasets and return one sample of each"""
 
-    def __init__(self, dataset1, dataset2):
+    def __init__(self, dataset1: PasswordDataset, dataset2: PasswordDataset):
         self.dataset1 = dataset1
         self.dataset2 = dataset2
 
-    def __len__(self):
+    def __len__(self) -> int:
         return max(len(self.dataset1), len(self.dataset2))
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> DpoBatch:
         return self.dataset1[idx], self.dataset2[idx]
 
-    def collate_fn(self, batch):
+    def collate_fn(self, batch: Iterable[DpoBatch]) -> DpoBatch:
         collated1 = self.dataset1.collate_fn([b[0] for b in batch])
         collated2 = self.dataset2.collate_fn([b[1] for b in batch])
         return collated1, collated2
@@ -107,7 +113,7 @@ TrainingProcess = tuple[Callable, Dataset, float]  # train_fn, train_ds, weight
 
 
 def train_loop(
-    model: AutoModelForCausalLM,
+    model: GPTNeoXForCausalLM,
     train_processes: dict[str, TrainingProcess],  # all train_ds should have the same size
     val_fn: Callable,
     val_dss: dict[str, Dataset],
@@ -177,7 +183,7 @@ def train_loop(
                         }
                     )
                     # perf = log likelihood - theoritical log likelihood = theoritical_min_loss - loss
-                    val_log.update({f"perf/{k}": theoritical_min - v for k, v in val_log.items() if "loss" in k})
+                    val_log.update({f"perf/{k}": NO_MEMORIZATION_LOSS - v for k, v in val_log.items() if "loss" in k})
 
                     max_val_tolog = {f"maxs/{k}": max(v, max_val_tolog[f"maxs/{k}"]) for k, v in val_log.items()}
                     val_log.update(max_val_tolog)
@@ -186,11 +192,11 @@ def train_loop(
             wandb.log(to_log)
 
 
-def batch_to_device(batch, device):
+def batch_to_device(batch: NtpBatch, device: str) -> NtpBatch:
     return {k: v.to(device) for k, v in batch.items()}
 
 
-def compute_by_seq_lp(model, batch, aggr="sum"):
+def compute_by_seq_lp(model: GPTNeoXForCausalLM, batch: NtpBatch, aggr: Literal["sum", "mean"] = "sum") -> torch.Tensor:
     """Return the log likelyhood of each sequence in the batch"""
     logits = model(**batch).logits
     log_probs = torch.log_softmax(logits, dim=-1)
@@ -203,14 +209,16 @@ def compute_by_seq_lp(model, batch, aggr="sum"):
         raise ValueError(f"aggr must be sum or mean, got {aggr}")
 
 
-def ntp_loss(model, batch):
+def ntp_loss(model: GPTNeoXForCausalLM, batch: NtpBatch) -> torch.Tensor:
     model_device = next(model.parameters()).device
     batch = batch_to_device(batch, model_device)
     lp = compute_by_seq_lp(model, batch, aggr="mean").mean()
     return -lp
 
 
-def dpo_loss(model, batch, ref_model, beta=1.0):
+def dpo_loss(
+    model: GPTNeoXForCausalLM, batch: DpoBatch, ref_model: GPTNeoXForCausalLM, beta: float = 1.0
+) -> torch.Tensor:
     batch_p, batch_n = batch
     model_device = next(model.parameters()).device
     batch_p = batch_to_device(batch_p, model_device)
@@ -357,7 +365,7 @@ def run(
     wandb.finish()
 
 
-def worker(job_queue, device):
+def worker(job_queue: Queue, device: str):
     while not job_queue.empty():
         try:
             kwargs = job_queue.get()
@@ -366,10 +374,10 @@ def worker(job_queue, device):
             print(f"Error occurred during execution: {e}")
 
 
-ExperimentName = Literal["lrbeta", "weights", "seeds", "models", "helds", "freeze"]
+ExperimentName = Literal["lrbeta", "weights", "seeds", "smodels", "models", "helds", "freeze"]
 
 
-def hp_search(experiment_names: ExperimentName = ["seeds", "models", "helds", "freeze"]):
+def hp_search(experiment_names: ExperimentName = ["seeds", "smodels", "helds", "freeze", "prefix"]):
     # create a job queue containing all combinations
 
     jobs = []
@@ -424,24 +432,22 @@ def hp_search(experiment_names: ExperimentName = ["seeds", "models", "helds", "f
                     "EleutherAI/pythia-410m",
                     "EleutherAI/pythia-1b",
                 ],
-                "seed": [1, 2, 3, 4],
+                "seed": list(range(5)),
             }
         elif experiment == "helds":
             grid = {
-                "held_batches": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                # "seed": [0, 1, 2],
-                "seed": [1, 2, 3, 4],
+                "held_batches": list(range(1, 10)),
+                "seed": list(range(5)),
             }
         elif experiment == "freeze":
             grid = {
                 "dpo_first_half_only": [False],
-                # "seed": [0, 1, 2, 3, 4],
-                "seed": [3, 4],
+                "seed": list(range(5)),
             }
         elif experiment == "prefix":
             grid = {
                 "use_prefixes": [False],
-                "seed": [0, 1, 2, 3, 4],
+                "seed": list(range(5)),
             }
 
         grid["experiment"] = [experiment]
@@ -478,4 +484,3 @@ if __name__ == "__main__":
             "hp_search": hp_search,
         }
     )
-

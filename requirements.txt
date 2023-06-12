@@ -1,0 +1,8 @@
+numpy
+wandb
+matplotlib
+scipy
+tqdm
+transformers
+torch
+attrs
