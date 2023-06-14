@@ -61,8 +61,10 @@ print(f"mean: {mean}, std: {std}")
 p_th = math.exp(theoritical_max)
 ps = [math.exp(d + theoritical_max) for d in deltas]
 print("t-test", ttest_1samp(ps, p_th))
+print("t-test on logprobs", ttest_1samp(deltas, 0))
 print("mean", np.mean(ps), "std", np.std(ps))
 print("relative increas", (np.mean(ps) - p_th) / p_th)
+print("full geometric mean relative increase", (np.exp(np.mean(np.log(ps))) - p_th) / p_th)
 # %%
 
 held_out_nbs = list(range(1, 11))
